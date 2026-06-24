@@ -378,7 +378,10 @@ class OpenAIAugmentedLLM(
                             span.record_exception(result)
                             continue
                         if result is not None:
-                            messages.append(result)
+                            if isinstance(result, list):
+                                messages.extend(result)
+                            else:
+                                messages.append(result)
                 elif choice.finish_reason == "length":
                     # We have reached the max tokens limit
                     self.logger.debug(
@@ -605,10 +608,9 @@ class OpenAIAugmentedLLM(
     async def execute_tool_call(
         self,
         tool_call: ChatCompletionMessageToolCall,
-    ) -> ChatCompletionToolMessageParam:
+    ) -> List[ChatCompletionMessageParam]:
         """
-        Execute a single tool call and return the result message.
-        Returns a single ChatCompletionToolMessageParam object.
+        Execute a single tool call and return the result messages.
         """
         tracer = get_tracer(self.context)
         with tracer.start_as_current_span(
@@ -630,11 +632,13 @@ class OpenAIAugmentedLLM(
             except json.JSONDecodeError as e:
                 span.record_exception(e)
                 span.set_status(trace.Status(trace.StatusCode.ERROR))
-                return ChatCompletionToolMessageParam(
-                    role="tool",
-                    tool_call_id=tool_call_id,
-                    content=f"Invalid JSON provided in tool call arguments for '{tool_name}'. Failed to load JSON: {str(e)}",
-                )
+                return [
+                    ChatCompletionToolMessageParam(
+                        role="tool",
+                        tool_call_id=tool_call_id,
+                        content=f"Invalid JSON provided in tool call arguments for '{tool_name}'. Failed to load JSON: {str(e)}",
+                    )
+                ]
 
             tool_call_request = CallToolRequest(
                 method="tools/call",
@@ -647,11 +651,16 @@ class OpenAIAugmentedLLM(
 
             self._annotate_span_for_call_tool_result(span, result)
 
-            return ChatCompletionToolMessageParam(
-                role="tool",
+            converted = OpenAIConverter.convert_tool_result_to_openai(
+                tool_result=result,
                 tool_call_id=tool_call_id,
-                content=[mcp_content_to_openai_content_part(c) for c in result.content],
             )
+
+            if isinstance(converted, tuple):
+                tool_message, additional_messages = converted
+                return [tool_message, *additional_messages]
+
+            return [converted]
 
     def message_param_str(self, message: ChatCompletionMessageParam) -> str:
         """Convert an input message to a string representation."""

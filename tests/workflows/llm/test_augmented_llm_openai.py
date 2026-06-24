@@ -21,6 +21,11 @@ from mcp_agent.workflows.llm.augmented_llm_openai import (
 )
 
 
+class ConcreteOpenAIAugmentedLLM(OpenAIAugmentedLLM):
+    async def generate_stream(self, message, request_params=None):
+        raise NotImplementedError
+
+
 class TestOpenAIAugmentedLLM:
     """
     Tests for the OpenAIAugmentedLLM class.
@@ -41,7 +46,7 @@ class TestOpenAIAugmentedLLM:
         )
 
         # Create LLM instance
-        llm = OpenAIAugmentedLLM(name="test", context=mock_context)
+        llm = ConcreteOpenAIAugmentedLLM(name="test", context=mock_context)
 
         # Apply common mocks
         llm.history = MagicMock()
@@ -362,6 +367,57 @@ class TestOpenAIAugmentedLLM:
         # Assertions
         assert len(responses) == 2
         assert responses[1].content == "Response after tool error"
+
+    @pytest.mark.asyncio
+    async def test_tool_results_are_sent_as_string_messages(
+        self, mock_llm, default_usage
+    ):
+        """
+        Tests that tool results sent back to OpenAI use string content instead of content-part lists.
+        """
+        call_count = 0
+
+        async def custom_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+
+            if call_count == 1:
+                return self.create_tool_use_response(
+                    "test_tool",
+                    {"query": "test query"},
+                    "tool_123",
+                    usage=default_usage,
+                )
+            elif call_count == 2:
+                return self.create_text_response(
+                    "Final response after tool use", usage=default_usage
+                )
+
+        async def execute_many_side_effect(tasks):
+            return [await task() for task in tasks]
+
+        mock_llm.executor.execute = AsyncMock(side_effect=custom_side_effect)
+        mock_llm.executor.execute_many = AsyncMock(side_effect=execute_many_side_effect)
+        mock_llm.call_tool = AsyncMock(
+            return_value=MagicMock(
+                content=[TextContent(type="text", text="Tool result")],
+                isError=False,
+                tool_call_id="tool_123",
+            )
+        )
+
+        responses = await mock_llm.generate("Test query with tool")
+
+        assert len(responses) == 2
+
+        second_call_args = mock_llm.executor.execute.call_args_list[1][0]
+        request_obj = second_call_args[1]
+        tool_message = request_obj.payload["messages"][-1]
+
+        assert tool_message["role"] == "tool"
+        assert tool_message["tool_call_id"] == "tool_123"
+        assert tool_message["content"] == "Tool result"
+        assert not isinstance(tool_message["content"], list)
 
     # Test 8: API Error Handling
     @pytest.mark.asyncio
