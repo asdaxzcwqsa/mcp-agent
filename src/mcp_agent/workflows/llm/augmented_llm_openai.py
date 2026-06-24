@@ -369,7 +369,10 @@ class OpenAIAugmentedLLM(
                     self.logger.debug(
                         f"Iteration {i}: Tool call results: {str(tool_results) if tool_results else 'None'}"
                     )
-                    # Add non-None results to messages.
+                    # Keep tool-role messages together before any follow-up messages
+                    # produced from mixed-content tool results.
+                    tool_messages: List[ChatCompletionMessageParam] = []
+                    follow_up_messages: List[ChatCompletionMessageParam] = []
                     for result in tool_results:
                         if isinstance(result, BaseException):
                             self.logger.error(
@@ -379,9 +382,19 @@ class OpenAIAugmentedLLM(
                             continue
                         if result is not None:
                             if isinstance(result, list):
-                                messages.extend(result)
+                                for result_message in result:
+                                    if result_message.get("role") == "tool":
+                                        tool_messages.append(result_message)
+                                    else:
+                                        follow_up_messages.append(result_message)
                             else:
-                                messages.append(result)
+                                if result.get("role") == "tool":
+                                    tool_messages.append(result)
+                                else:
+                                    follow_up_messages.append(result)
+
+                    messages.extend(tool_messages)
+                    messages.extend(follow_up_messages)
                 elif choice.finish_reason == "length":
                     # We have reached the max tokens limit
                     self.logger.debug(
